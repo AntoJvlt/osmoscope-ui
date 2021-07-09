@@ -332,6 +332,8 @@ table#layer-meta {
 }
 
 table.desc {
+    display: block;
+    overflow: auto;
     border-spacing: 0;
     border-collapse: collapse;
 }

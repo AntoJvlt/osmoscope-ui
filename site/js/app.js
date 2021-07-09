@@ -1,5 +1,5 @@
 
-var map, vt_layer, data_sources = [], data_layers = {};
+var map, vt_layer, selection_layer, data_sources = [], data_layers = {};
 var unique_id_counter = 1, highlight = null;
 var load_counter = 0;
 
@@ -161,6 +161,10 @@ var style_stroke_casing = new ol.style.Stroke({color: 'rgba(255,255,255,1)', wid
 var style_stroke_core = new ol.style.Stroke({color: 'rgba(200,0,0,1)', width: 3});
 var style_fill = new ol.style.Fill({color: 'rgba(200,0,0,0.2)'});
 
+var selected_style_circle_core = new ol.style.Circle({fill: new ol.style.Fill({color: 'rgba(62, 135, 230,1)'}), radius: 4});
+var selected_style_stroke_core = new ol.style.Stroke({color: 'rgba(62, 135, 230,1)', width: 3});
+var selected_style_fill = new ol.style.Fill({color: 'rgba(62, 135, 230,0.2)'});
+
 function get_linestring_points(feature) {
     var coordinates = feature.getGeometry().getCoordinates();
     return new ol.geom.MultiPoint(coordinates);
@@ -210,6 +214,37 @@ var styles = {
 styles["MultiPoint"] = styles["Point"];
 styles["MultiLineString"] = styles["LineString"];
 styles["MultiPolygon"] = styles["Polygon"];
+
+var selected_styles = {
+    Point: [
+        new ol.style.Style({image: style_circle_casing}),
+        new ol.style.Style({image: selected_style_circle_core})
+    ],
+    LineString: [
+        new ol.style.Style({stroke: style_stroke_casing}),
+        new ol.style.Style({stroke: selected_style_stroke_core}),
+        new ol.style.Style({image: style_circle_casing, geometry: get_linestring_points}),
+        new ol.style.Style({image: selected_style_circle_core, geometry: get_linestring_points})
+    ],
+    Polygon: [
+        new ol.style.Style({stroke: style_stroke_casing}),
+        new ol.style.Style({stroke: selected_style_stroke_core, fill: selected_style_fill}),
+        new ol.style.Style({image: style_circle_casing, geometry: get_polygon_points}),
+        new ol.style.Style({image: selected_style_circle_core, geometry: get_polygon_points})
+    ],
+    GeometryCollection: [
+        new ol.style.Style({stroke: style_stroke_casing}),
+        new ol.style.Style({stroke: selected_style_stroke_core, fill: selected_style_fill}),
+        new ol.style.Style({image: style_circle_casing, geometry: get_geometrycollection_points}),
+        new ol.style.Style({image: selected_style_circle_core, geometry: get_geometrycollection_points})
+    ]
+      
+};
+selected_styles["MultiPoint"] = selected_styles["Point"];
+selected_styles["MultiLineString"] = selected_styles["LineString"];
+selected_styles["MultiPolygon"] = selected_styles["Polygon"];
+
+var selected_feature = null
 
 /****************************************************************************/
 
@@ -393,6 +428,7 @@ function switch_to_no_layer() {
     document.querySelector('#title h1').textContent = "";
     if (vt_layer !== undefined) {
         map.removeLayer(vt_layer);
+        map.removeLayer(selection_layer)
     }
 }
 
@@ -418,6 +454,7 @@ function switch_to_layer(id) {
 
     if (vt_layer !== undefined) {
         map.removeLayer(vt_layer);
+        map.removeLayer(selection_layer);
     }
 
     if (layer.vector_tile_url()) {
@@ -432,8 +469,16 @@ function switch_to_layer(id) {
                 return styles[feature.getGeometry().getType()];
             }
         });
-
-        map.addLayer(vt_layer);
+        // Selection
+        selection_layer = new ol.layer.VectorTile({
+            source: vt_layer.getSource(),
+            style: function (feature) {
+            if (selected_feature == feature) {
+                return selected_styles[feature.getGeometry().getType()];
+            }},
+        });
+        map.addLayer(vt_layer)
+        map.addLayer(selection_layer)
     } else if (layer.geojson_url()) {
         vt_layer = new ol.layer.Vector({
             source: new ol.source.Vector({
@@ -445,7 +490,16 @@ function switch_to_layer(id) {
                 return styles[feature.getGeometry().getType()];
             }
         });
-        map.addLayer(vt_layer);
+        // Selection
+        selection_layer = new ol.layer.Vector({
+            source: vt_layer.getSource(),
+            style: function (feature) {
+            if (selected_feature == feature) {
+                return selected_styles[feature.getGeometry().getType()];
+            }},
+        });
+        map.addLayer(vt_layer)
+        map.addLayer(selection_layer)
     }
 
     if (layer.stats_data_url()) {
@@ -830,28 +884,70 @@ document.addEventListener('DOMContentLoaded', function() {
     var layerSwitcher = new ol.control.LayerSwitcher();
     map.addControl(layerSwitcher);
 
-    var select = new ol.interaction.Select({
-        hitTolerance: 3
-    });
-    map.addInteraction(select);
-    select.on('select', function(e) {
-        var features = e.selected;
-        if (features.length > 0) {
-            document.getElementById('highlight-data').innerHTML = popup_content(features[0]);
-            var selection = get_selection_object(features[0]);
-            var extent = features[0].getProperties().geometry.getExtent();
-            var buffered_extent = ol.extent.buffer(extent, 500);
-            document.getElementById('selection-josm').addEventListener('click', function() {
-                if (selection === undefined) {
-                    josm_control.open_in_josm(buffered_extent);
-                } else {
-                    josm_control.open_in_josm(buffered_extent, selection[0] + selection[1]);
+    map.on(['click'], function (event) {
+        var hit = false;
+        map.forEachFeatureAtPixel(
+            event.pixel,
+            function (feature) {
+                //Only keep the first hit
+                if (!hit) {
+                    hit = true;
+                    selected_feature = feature;
+                    selection_layer.changed();
+    
+                    document.getElementById('highlight-data').innerHTML = popup_content(feature);
+                    var selection = get_selection_object(feature);
+                    var extent = feature.getProperties().geometry.getExtent();
+                    var buffered_extent = ol.extent.buffer(extent, 500);
+                    document.getElementById('selection-josm').addEventListener('click', function() {
+                        if (selection === undefined) {
+                            josm_control.open_in_josm(buffered_extent);
+                        } else {
+                            josm_control.open_in_josm(buffered_extent, selection[0] + selection[1]);
+                        }
+                    });
+                    document.getElementById('selection-id').addEventListener('click', function() {
+                        id_control.open_in_id(ol.extent.getCenter(extent), selection);
+                    });
                 }
-            });
-            document.getElementById('selection-id').addEventListener('click', function() {
-                id_control.open_in_id(ol.extent.getCenter(extent), selection);
-            });
+            },
+            {
+                hitTolerance: 3
+            }
+        );
+
+        if (!hit) {
+            selected_feature = null
+            selection_layer.changed();
         }
+        // vt_layer.getFeatures(event.pixel).then(function (features) {
+        //     if (!features.length) {
+        //         selected_feature = null
+        //         selectionLayer.changed();
+        //         return;
+        //     }
+        //     var feature = features[0];
+        //     if (!feature) {
+        //         return;
+        //     }
+        //     selected_feature = feature;
+        //     selectionLayer.changed();
+
+        //     document.getElementById('highlight-data').innerHTML = popup_content(feature);
+        //     var selection = get_selection_object(feature);
+        //     var extent = feature.getProperties().geometry.getExtent();
+        //     var buffered_extent = ol.extent.buffer(extent, 500);
+        //     document.getElementById('selection-josm').addEventListener('click', function() {
+        //         if (selection === undefined) {
+        //             josm_control.open_in_josm(buffered_extent);
+        //         } else {
+        //             josm_control.open_in_josm(buffered_extent, selection[0] + selection[1]);
+        //         }
+        //     });
+        //     document.getElementById('selection-id').addEventListener('click', function() {
+        //         id_control.open_in_id(ol.extent.getCenter(extent), selection);
+        //     });
+        // });
     });
 
     var geocoder = new Geocoder('nominatim', {
@@ -873,7 +969,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
     window.addEventListener("load", function(event) {
         if (window.localStorage.getItem("sources") === null) {
-            load_data_source('http://area.jochentopf.com/osmm/layers.json');
+            load_data_source('https://gsoc2021-qa.nominatim.org/QA-data/layers.json');
         } else {
             var sources = JSON.parse(window.localStorage.getItem("sources"));
             sources.forEach(function(source) {
